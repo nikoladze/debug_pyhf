@@ -60,9 +60,12 @@ def get_p0(infile):
     poi.setVal(0)
     bModel.SetSnapshot(ROOT.RooArgSet(poi))
 
+    np = workspace.var("gamma_uncorrshape_bin_0")
+    np.setRange(1e-10, 10.)
+
     ac = ROOT.RooStats.AsymptoticCalculator(data, sbModel, bModel)
     #ac.SetPrintLevel(10)
-    ac.SetPrintLevel(0)
+    #ac.SetPrintLevel(0)
     ac.SetOneSidedDiscovery(True)
 
     result = ac.GetHypoTest()
@@ -72,6 +75,8 @@ def get_p0(infile):
     for sigma in [-2, -1, 0, 1, 2]:
         usecls = 0
         pnull_exp.append(ac.GetExpectedPValues(pnull_obs, palt_obs, sigma, usecls))
+
+    infile.Close()
 
     return {'p0_obs': pnull_obs, 'p0_exp': pnull_exp}
 
