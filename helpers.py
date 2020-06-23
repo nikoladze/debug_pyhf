@@ -2,16 +2,16 @@
 
 import ROOT
 
-import json
-import sys
 import pyhf
 import tempfile
 import os
 import shutil
 import subprocess
+from scipy.stats import norm
+import math
+import numpy as np
 
 def write_data(data, output_root):
-    # source_data = json.load(open(sys.argv[1]))
     source_data = data
     root_file = output_root
 
@@ -92,9 +92,12 @@ def run_hf(data, template_dir="multibin_histfactory_p0"):
         return get_p0(os.path.join(tmpdir, "hf/results/example_combined_GaussExample_model.root"))
 
 
-def run_pyhf(data):
+def run_pyhf(data, use_minuit=False):
     bindata = data["bindata"]
-    pyhf.set_backend("numpy")
+    if use_minuit:
+        pyhf.set_backend("numpy", custom_optimizer=pyhf.optimize.minuit_optimizer())
+    else:
+        pyhf.set_backend("numpy", custom_optimizer=pyhf.optimize.scipy_optimizer())
     model = pyhf.simplemodels.hepdata_like(
         signal_data=bindata["sig"],
         bkg_data=bindata["bkg"],
@@ -107,6 +110,67 @@ def run_pyhf(data):
         test_poi, data, model, return_expected_set=True, use_q0=True,
     )
     return {"p0_obs" : obs[0], "p0_exp" : list(exp.reshape(-1))}
+
+
+def get_p0_obs_asymptotic_exact(data):
+    # http://www.pp.rhul.ac.uk/~cowan/stat/medsig/medsigNote.pdf
+    bd = data["bindata"]
+    b = bd["bkg"][0]
+    tau = b / (bd["bkgerr"][0] ** 2)
+    m = tau * b
+    n = bd["data"][0]
+    if n <= b:
+        return 0.5
+    return norm.sf(
+        np.sqrt(-2 * (n * np.log((n + m) / ((1 + tau) * n)) + m * np.log((tau * (n + m)) / ((1 + tau) * m))))
+    )
+
+
+def get_p0_exp_asymptotic_exact(data):
+    """
+    Calculate the expected p0 value (given an observation also,
+    using the mles from a constrained fit (with mu=1) to data for the asimov data)
+    based on the asymptotic approximation.
+    See Eur.Phys.J.C71, `arXiv:1007.1727 <https://arxiv.org/abs/1007.1727>`_ ("CCGV paper") for the formulas.
+    The derivation follows the same procedure as described for p0 in  <http://www.pp.rhul.ac.uk/~cowan/stat/medsig/medsigNote.pdf>
+    """
+
+    def ll(n, m, mu, s, b, tau):
+        "Log likelihood without factorials (cancel in ratio)"
+        return n*math.log(mu*s+b)-(mu*s+b)+m*math.log(tau*b)-tau*b
+
+    def get_mles(mu, n, m, s, tau):
+        # MLEs from CCGV paper
+        muhat = (n-m/tau)/s
+        bhat = m/tau
+        bhathat = (n+m-(1+tau)*mu*s+math.sqrt((n+m-(1+tau)*mu*s)**2+4*(1+tau)*m*mu*s))/(2*(1+tau))
+        return muhat, bhat, bhathat
+
+    mu = 0
+
+    bd = data["bindata"]
+
+    n = bd["data"][0]
+    b = bd["bkg"][0]
+    s = bd["sig"][0]
+    tau = b / (bd["bkgerr"][0] ** 2)
+    m = tau * b
+
+    ## Asimov dataset for mu=1 (expected discovery)
+    # constrained fit to get parameter values for asimov dataset
+    muhat_a, bhat_a, bhathat_a = get_mles(1, n, m, s, tau)
+    n_a = bhathat_a + s
+    m_a = tau*bhathat_a
+
+    # fit the asimov datatset
+    muhat, bhat, bhathat = get_mles(mu, n_a, m_a, s, tau)
+
+    condll = ll(n_a, m_a, mu, s, bhathat, tau)
+    uncondll = ll(n_a, m_a, muhat, s, bhat, tau)
+
+    z = math.sqrt(-2.*(condll-uncondll))
+
+    return [norm.sf(z + i) for i in [2, 1, 0, -1, -2]]
 
 
 if __name__ == "__main__":
